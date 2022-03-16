@@ -1,0 +1,202 @@
+---
+title: "Projeto final"
+author: "Diego"
+date: "3/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache=TRUE, warning = FALSE, results = "hide")
+```
+
+# Libraries
+
+```{r echo=FALSE}
+library(timetk)
+library(tidyverse)
+library(BatchGetSymbols)
+library(forecast)
+library(tseries)
+library(feasts)
+library(tidyr)
+library(recipes)
+library(workflows)
+library(garchmodels)
+```
+
+
+# Stocks gathering
+```{r}
+stocks <- c("ibov3", "ENBR3", "")
+
+# "VALE3.SA",
+my_stocks <- c("ITUB3.SA", "ENBR3.SA",
+               "FLRY3.SA", "B3SA3.SA", "BBDC3.SA",
+               "EGIE3.SA", "TAEE11.SA", "WEGE3.SA", 
+               "PSSA3.SA"
+               )
+
+asset_returns <- 
+  BatchGetSymbols(my_stocks,
+                first.date = "2000-01-01",
+                bench.ticker = "^BVSP",
+                type.return = "log"
+                )$df.tickers %>% 
+  select(ref.date, ticker, ret.closing.prices, price.close) %>% 
+  na.omit() 
+
+asset_returns %>% 
+  group_by(ticker) %>% 
+  count()
+``` 
+
+ 
+# Retornos e autocorrelação
+
+```{r}
+
+plot_returns <- function (stock) ts.plot(stock)
+
+
+tickers <- asset_returns$ticker %>% 
+  unique
+
+
+for (t in tickers) {
+  df <- asset_returns %>% 
+    filter(ticker == t)
+  
+  if (t == "ENBR3.SA") {
+    df <- df %>%
+      filter(ref.date > (df$ref.date[1] + 2000))
+  }
+  
+  if (t == "WEGE3.SA")  {
+    df <- df %>% 
+      filter(ref.date > (df$ref.date[1] + 2000))
+  }
+  
+  
+  if (t == "WEGE3.SA")  {
+    df <- df %>% 
+      filter(ref.date > (df$ref.date[1] + 1000))
+  }
+  
+  
+  par(mfrow=c(1, 2))
+  
+  ts.plot(df$price.close)
+  ts.plot(df$ret.closing.prices, main=paste("Ticker", t)) 
+  par(mfrow=c(1,1))
+    
+}
+
+```
+
+Os retornos aparentemente são estacionários. Iremos fazer o teste de ljung-box para confirmar o ruído branco nos resíduos e também realizar o teste de raíz unitária.
+
+
+```{r, results = "show"}
+
+box_test <- function (df, lag = 1, type = 'Ljung-Box') Box.test(df, lag = lag, type = type)
+
+for (t in tickers) {
+  df <- asset_returns %>% 
+    filter(ticker == t)
+  
+  acf(df$ret.closing.prices, main = paste("ACF", t)) %>% 
+    autoplot() %>% 
+    theme(
+      plot.title = element_text(vjust = -50)
+    )
+  
+  print(t)
+  print(box_test(df$ret.closing.prices))
+  print(adf.test(df$ret.closing.prices))
+}
+
+```
+
+# Busca por melhor modelo a partir do tune
+
+```{r}
+
+fit_ts_stock <- function (stock) {
+  if (nrow(stock) > 0) {
+    
+  
+    stock %>% 
+      timetk::future_frame(
+        .length_out = 3,
+        .date_var = ref.date,
+        .bind_data = TRUE
+      ) %>% 
+      mutate(ref.date = as.POSIXct(ref.date))
+    
+    stock_train <- stock %>% 
+      drop_na()
+    
+    stock_future <- stock %>% 
+      filter(is.na(ret.closing.prices))
+    
+    stock_train %>% 
+      mutate(
+        ret2 = ret.closing.prices ^ 2
+      ) %>% 
+      ggplot(
+        aes(ref.date, ret2)
+      ) +
+      geom_line()
+    
+    stock_model <- garchmodels::garch_reg(
+      mode = "regression",
+      arch_order = tune::tune(),
+      garch_order = tune::tune(),
+      ma_order = tune::tune(),
+      ar_order = tune::tune(),
+      tune_by = "sigmaFor"
+    ) %>% 
+      parsnip::set_engine("rugarch")
+    
+    stock_recipe <- recipes::recipe(
+      ret.closing.prices ~ ref.date,
+      data = da_train
+    )
+    
+    stock_wflw <- workflow() %>% 
+      add_recipe(stock_recipe) %>% 
+      add_model(stock_model)
+    
+    stock_resamples <-  time_series_cv(
+        resamples,
+        .date_var = ref.date,
+        .value = ret.closing.prices
+    )
+    
+    stock_tune_results <- tune_grid(
+      object = stock_wflw,
+      resamples = resamples,
+      param_info = dials::parameters(stock_wflw),
+      grid = 5,
+      control = control_grid(
+        verbose = TRUE,
+        allow_par = TRUE,
+        parallel_over = "everything"
+      )
+    )
+    
+    
+    stock_tune_results %>% 
+      show_best(metric = "MAE")
+  }
+} 
+
+
+for (t in tickers) {
+  df %>% 
+    filter(ticker == t) %>% 
+    fit_ts_stock
+}
+
+```
+
