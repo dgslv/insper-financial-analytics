@@ -1,0 +1,300 @@
+---
+title: ""
+author: "Diego"
+date: "3/18/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Modelo de espaço de estado
+
+Filtro de Kallman
+
+ler sobre propriedade markoviana
+
+* strutural models -> harvey
+* bayesian strutucture time series - bsts
+
+https://palomavu.github.io/Bayesian_Kalman/#1
+
+
+```{r}
+library(tidyquant)
+library(dlm)
+library(BatchGetSymbols)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+
+
+```{r}
+tickers_symbols <- c("AMZN", "NFLX", "^GSPC")
+
+start_date <- "2015-01-01"
+
+data <- BatchGetSymbols(
+  tickers_symbols,
+  first.date = start_date,
+  last.date = Sys.Date(),
+  bench.ticker = '^GSPC',
+  type.return = "log",
+  freq.data = "daily",
+  do.complete.data = TRUE,
+  do.fill.missing.prices = TRUE
+)
+
+```
+
+
+```{r}
+
+df.tickers <- data$df.tickers %>% 
+  filter(
+    volume != 0
+  )
+```
+
+
+```{r}
+df.tickers %>% 
+  filter(ticker == "NFLX") %>% 
+  arrange(desc(ref.date), ret.closing.prices)
+
+unique(df.tickers$ticker)
+```
+
+
+```{r}
+ggplot(df.tickers, aes(x=ref.date, y=price.close, group=ticker)) +
+  geom_line(aes(color=ticker))+
+  geom_point(aes(color=ticker))+
+  theme(legend.position="top")+
+  xlab('Data')+ylab('$')
+```
+
+
+```{r}
+ggplot(df.tickers, aes(x=ref.date, y=ret.closing.prices, group=ticker)) +
+  geom_line(aes(color=ticker))+
+  geom_point(aes(color=ticker))+
+  theme(legend.position="top")+
+  xlab('Data')+ylab('$')
+```
+
+
+
+```{r}
+ret_amazon <- df.tickers %>%
+  dplyr::select('ticker','ret.closing.prices') %>%
+  dplyr::filter(ticker == 'AMZN') %>%
+  drop_na('ret.closing.prices')
+
+ret_netflix <- df.tickers %>%
+  dplyr::select('ticker','ret.closing.prices') %>%
+  dplyr::filter(ticker == 'NFLX') %>%
+  drop_na('ret.closing.prices')
+
+ret_sp500 <- df.tickers %>%
+  dplyr::select('ticker','ret.closing.prices') %>%
+  dplyr::filter(ticker == '^GSPC') %>%
+  drop_na('ret.closing.prices')
+
+```
+
+
+```{r}
+
+capm_amazon = lm(ret_amazon$ret.closing.prices~ret_sp500$ret.closing.prices)  
+capm_netflix = lm(ret_netflix$ret.closing.prices~ret_sp500$ret.closing.prices)
+summary(capm_amazon)
+summary(capm_netflix)
+
+```
+
+
+```{r}
+
+rang = range(ret_sp500$ret.closing.prices,ret_amazon$ret.closing.prices)
+plot(ret_sp500$ret.closing.prices,ret_amazon$ret.closing.prices,xlab="Market return (S&P500)",ylab="Amazon",xlim=rang,ylim=rang)
+abline(capm_amazon$coef,col=2,lwd=3)
+title(paste("Amazon = ",round(capm_amazon$coef[1],4)," + ",round(capm_amazon$coef[2],4),"*SP500",sep=""))
+
+```
+
+```{r}
+
+rang = range(ret_sp500$ret.closing.prices,ret_netflix$ret.closing.prices)
+plot(ret_sp500$ret.closing.prices,ret_netflix$ret.closing.prices,xlab="Market return (S&P500)",ylab="Netflix",xlim=rang,ylim=rang)
+abline(capm_netflix$coef,col=2,lwd=3)
+title(paste("Netflix = ",round(capm_netflix$coef[1],4)," + ",round(capm_netflix$coef[2],4),"*SP500",sep=""))
+
+```
+
+
+```{r}
+dlm2 = function(parm,x.mat){
+  parm = exp(parm)
+  return( dlmModReg(X=x.mat, dV=parm[1], dW=c(parm[2],parm[3])) )
+}
+```
+
+```{r}
+fit2 = dlmMLE(y=ret_amazon$ret.closing.prices,parm=c(1,1,1),x.mat=ret_sp500$ret.closing.prices,build=dlm2,hessian=T)
+```
+
+```{r}
+se =  sqrt(exp(fit2$par))
+se
+```
+
+
+```{r}
+
+mod2  = dlm2(fit2$par,ret_sp500$ret.closing.prices)
+mod2f = dlmFilter(ret_amazon$ret.closing.prices,mod2)
+mod2s = dlmSmooth(mod2f)
+
+```
+
+```{r}
+
+date = df.tickers$ref.date[df.tickers$ticker == 'AMZN'][-1]
+plot(date,mod2f$m[,1][-1],xlab="day",ylab=expression(alpha[t]),type="l",main="")
+lines(date,mod2s$s[,1][-1],col=2)
+abline(h=capm_amazon$coef[1],col=3)
+abline(h=1,lty=2)
+
+```
+
+```{r}
+
+date = df.tickers$ref.date[df.tickers$ticker == 'AMZN'][-1]
+plot(date,mod2f$m[,2][-1],xlab="day",ylab=expression(beta[t]),type="l",main="")
+lines(date,mod2s$s[,2][-1],col=2)
+abline(h=capm_amazon$coef[2],col=3)
+abline(h=1,lty=2)
+
+```
+
+```{r}
+dlm_routine <- function (df, ticker_string, index_string) {
+  my_dlm = function(parm, x.mat) {
+    parm = exp(parm)
+    return (
+      dlmModReg(
+        X = x.mat, 
+        dV = parm[1], 
+        dW = c(parm[2], parm[3])
+      )
+    )
+  }
+  
+
+  ticker_ret <- df %>%
+    dplyr::select('ref.date','ticker','ret.closing.prices') %>%
+    dplyr::filter(ticker == ticker_string) %>%
+    drop_na('ret.closing.prices')
+  
+  index_ret <- df %>%
+    dplyr::select('ref.date', 'ticker','ret.closing.prices') %>%
+    dplyr::filter(ticker == index_string) %>%
+    drop_na('ret.closing.prices')
+  
+
+  rang = range(
+    index_ret$ret.closing.prices,
+    ticker_ret$ret.closing.prices
+  )
+
+  plot(
+    index_ret$ret.closing.prices,
+    ticker_ret$ret.closing.prices,
+    xlab = paste0("Market return", index_string),
+    ylab=ticker_string,
+    xlim=rang,
+    ylim=rang
+  )
+  
+  capm_ticker <- lm(ticker_ret$ret.closing.prices ~ index_ret$ret.closing.prices)
+  
+  abline(
+     capm_ticker$coef,
+     col = 2,
+     lwd = 3
+   )
+  
+ title(
+   paste(
+     ticker_string,
+     "=",
+     round(capm_ticker$coef[1],4)," + ",
+     round(capm_ticker$coef[2],4),
+     "*SP500",
+     sep=""
+   )
+ )
+  
+    
+  fit <- dlmMLE(
+    y = ticker_ret$ret.closing.prices,
+    parm = c(1, 1, 1),
+    x.mat = index_ret$ret.closing.prices,
+    build = my_dlm,
+    hessian = T
+  )
+
+  se = sqrt(exp(fit$par))
+
+  mod_std  = my_dlm(fit$par, index_ret$ret.closing.prices)
+  mod_filt = dlmFilter(ticker_ret$ret.closing.prices, mod_std)
+  mod_smot = dlmSmooth(mod_filt)
+
+
+  date = ticker_ret$ref.date[-1]
+   
+  plot(
+    date,
+    mod_filt$m[,1][-3],
+    xlab = "day",
+    ylab = expression(alpha[t]),
+    type = "l",
+    main = ""
+  )
+
+  lines(
+    date,
+    mod_smot$s[,1][-1],
+    col = 2
+  )
+  abline(
+    h = capm_ticker$coef[1],
+    col=3
+   )
+  abline(h = 1, lty = 2)
+
+}
+
+data$df.tickers %>% 
+  filter(volume != 0) %>% 
+  dlm_routine(
+    ticker_string = 'NFLX',
+    index_string = '^GSPC'
+  )
+
+```
+
+
+```{r}
+data$df.tickers %>% 
+  filter(volume != 0) %>% 
+  dlm_routine(
+    ticker_string = 'NFLX',
+    index_string = '^GSPC'
+  )
+```
+
+

@@ -12,6 +12,7 @@ knitr::opts_chunk$set(echo = TRUE, cache=TRUE, warning = FALSE, results = "hide"
 # Libraries
 
 ```{r echo=FALSE}
+library(garchmodels)
 library(timetk)
 library(tidyverse)
 library(BatchGetSymbols)
@@ -21,7 +22,6 @@ library(feasts)
 library(tidyr)
 library(recipes)
 library(workflows)
-library(garchmodels)
 ```
 
 
@@ -123,8 +123,6 @@ for (t in tickers) {
 
 fit_ts_stock <- function (stock) {
   if (nrow(stock) > 0) {
-    
-  
     stock %>% 
       timetk::future_frame(
         .length_out = 3,
