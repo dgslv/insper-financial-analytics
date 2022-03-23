@@ -36,7 +36,7 @@ my_stocks <- c("ITUB3.SA", "ENBR3.SA",
                "EGIE3.SA", "TAEE11.SA", "WEGE3.SA", 
                "PSSA3.SA")
 
-asset_returns <- 
+all_asset_returns <- 
   BatchGetSymbols(my_stocks,
                 first.date = "2000-01-01",
                 bench.ticker = "^BVSP",
@@ -49,7 +49,7 @@ asset_returns <-
 
 ```{r}
 tickers_filter_table = tibble(
-      stock = asset_returns$ticker %>% 
+      stock = all_asset_returns$ticker %>% 
         unique,
       add_date = c(0, 2300, 2000, 0, 3000, 4000)
     )
@@ -63,27 +63,33 @@ do_filter_ref_date <- function(stock, filter_table) {
         )
       )
 }
+
+asset_returns <- read_csv("\n", col_names = names(all_asset_returns)) %>% 
+  mutate(
+    ref.date = as.Date(ref.date),
+    ret.closing.prices = as.numeric(),
+    price.close = as.numeric(),
+  )
+
+
+for (t in unique(all_asset_returns$ticker)) {
+  asset_returns <- asset_returns %>% 
+    add_row(all_asset_returns %>% 
+              filter(ticker == t) %>% 
+              drop_na('ret.closing.prices') %>% 
+              do_filter_ref_date(tickers_filter_table))
+}
+
 ```
 
  
-# Retornos e autocorrelação
+# Funções - retornos e acf
 
 ```{r}
 
-plot_returns <- function(
-    stock, 
-    filter_table = tibble(
-      stock = c(),
-      add_date = c()
-    )
-  ) {
+plot_returns <- function(stock) {
   if (nrow(stock) > 0) {
-    df_plot <- stock %>% 
-      filter(ref.date > (
-        stock$ref.date[1] + 
-          filter_table$add_date[filter_table$stock == stock$ticker[1]]
-        )
-      )
+    df_plot <- stock
     
     par(mfrow=c(1, 3))
     
@@ -96,28 +102,17 @@ plot_returns <- function(
       df_plot$ret.closing.prices^2,
       main = paste("Ticker", stock$ticker[1], "ret^2")
     )
-    par(mfrow=c(1,1))
   }
 }
 
-plot_asset_returns <- function (asset_returns, filter_table = NA) {
+plot_asset_returns <- function (asset_returns) {
   tickers <- asset_returns$ticker %>%
     unique
-   
-  if (is.na(filter_table)) {
-    filter_table = tibble(
-      stock = tickers,
-      add_date = c(0)
-    )  
-  }
-  
 
   for (t in tickers) {
       asset_returns %>% 
         filter(ticker == t) %>% 
-        plot_returns(
-          filter_table = filter_table
-        )
+        plot_returns()
     }
 }
 
@@ -131,8 +126,6 @@ descriptive_asset_evaluation <- function (asset_returns) {
     df_box <- asset_returns %>% 
       filter(ticker == t)
     
-    
-    
     acf(df_box$ret.closing.prices, main = paste("ACF", t)) %>% 
       autoplot() %>% 
       theme(
@@ -145,24 +138,65 @@ descriptive_asset_evaluation <- function (asset_returns) {
   }
 }
 
+
+visualize_residual_distribution <- function(asset_returns) {
+  tickers <- asset_returns$ticker %>% 
+    unique
+  
+  par(mfrow = c(1,2))
+  for (t in tickers) {
+    ret <- (asset_returns %>% 
+        filter(ticker == t) %>% 
+        drop_na('ret.closing.prices'))$ret.closing.prices
+    
+    h <- hist(ret, 
+              breaks=20, 
+              col="red", 
+              xlab="", 
+              main= paste("Histogram", t)
+          ) 
+    xfit <- seq(min(ret),
+                max(ret),
+                length = 40) 
+    yfit <- dnorm(xfit,
+                  mean = mean(ret),
+                  sd = sd(ret)) 
+    yfit <- yfit * diff(h$mids[1:2]) * length(ret) 
+    lines(xfit, yfit, col="blue", lwd=2)
+    
+    qqnorm(ret, pch = 1, frame = FALSE)
+    qqline(ret, col = "steelblue", lwd = 2)
+    
+    print(paste("Realizando teste de normalidade para o ticker", t))
+    print(shapiro.test(as.vector(ret[c(1:4999)])))
+  }
+  
+}
+
 calculate_assets_beta <- function (asset_returns) {
   asset_returns %>%
     group_by(ticker) %>%
     do(model = lm(ret.closing.prices ~ market_ret$ret.closing.prices,
               data = .))
 }
-
 ```
 
+## Asset series, returns and squared ret
 ```{r}
-plot_asset_returns(asset_returns, filter_table = tickers_filter_table)
+plot_asset_returns(asset_returns)
 ```
 
 Os retornos aparentemente são estacionários. Iremos fazer o teste de ljung-box para confirmar o ruído branco nos resíduos e também realizar o teste de raíz unitária.
 
-
+## ACF
 ```{r, results = "show"}
 descriptive_asset_evaluation(asset_returns)
+```
+
+## Residual distribution
+
+```{r}
+visualize_residual_distribution(asset_returns)
 ```
 
 # Busca por melhor modelo a partir do tune
@@ -174,7 +208,7 @@ calculate_portfolio_covariability <- function(portfolio, market) {
 
 ```
 
-
+### garchmodels que nao funciona 
 ```{r}
 fit_ts_stock <- function (stock) {
     if (nrow(stock) > 0) {
@@ -299,13 +333,6 @@ evaluate_assets <- function(tickers,
 
 
 # evaluate_assets(my_stocks)
-
-```
-
-# Ajustando volatilidade do portfólio
-
-```{r}
-
 
 ```
 
@@ -442,7 +469,7 @@ evaluate_garch <- function(ticker, data, mean.model, variance.model) {
   
   garch_fit <- ugarchfit(spec = garch_spec, data = data$returns[-1])
   
-  tibble(ticker = ticker, fit = c(garch_fit), AIC = infocriteria(garch_fit))
+  tibble(ticker = ticker, fit = c(garch_fit), AIC = c(infocriteria(garch_fit)))
 }
 
 garch_forecast <- function(garch_fit) {
@@ -451,35 +478,35 @@ garch_forecast <- function(garch_fit) {
     plot
 }
 
-
-make_asset_garchs <- function(asset_returns, garchOrders, tickers_filter_table) {
+make_asset_garchs <- function(asset_returns, garchOrders) {
   if (nrow(garchOrders) > 0 & nrow(asset_returns) > 0) {
     tickers <- asset_returns$ticker %>% 
       unique
     
     models <- tibble(ticker = NA, fit = NA, AIC = NA)
     
-    print(tickers)
     for (t in tickers) {
+      print(paste("Rodando garch para a ação ", t))
       ret <- (asset_returns %>% 
         filter(ticker == t) %>% 
           drop_na('ret.closing.prices') %>% 
           mutate(
             returns = ret.closing.prices
-          )) %>% 
-          do_filter_ref_date(tickers_filter_table)
+          ))
       
       mean.model <- (garchOrders %>% 
         filter(ticker == t))$mean.model
       
       variance.model <- (garchOrders %>% 
         filter(ticker == t))$variance.model
-
+      
+      fit_result <- evaluate_garch(t, ret, mean.model, variance.model)
+      
       models <- models %>% 
-        add_row(evaluate_garch(t, ret, mean.model, variance.model))
+        add_row(fit_result)
     }
     
-    return (models)
+    models
   } else {
     print("Assets e ordens dos garchs são necessários")
   }
@@ -507,12 +534,18 @@ garchOrders <- tibble(
   )
 )
 
-make_asset_garchs(asset_returns, garchOrders, tickers_filter_table)
+
+# models <- make_asset_garchs(asset_returns, garchOrders, tickers_filter_table)
+asset_returns %>% 
+  filter(str_detect(ticker, 'ITUB')) %>% 
+  make_asset_garchs(garchOrders)
 ```
 
 
 ```{r}
 
-
+(models %>% 
+  drop_na %>% 
+  arrange(desc(AIC)))$fit
 ```
 
