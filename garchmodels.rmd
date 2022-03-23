@@ -1,0 +1,185 @@
+---
+title: "Meus ativos"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(garchmodels)
+library(timetk)
+library(tidymodels)
+library(tidyverse)
+library(BatchGetSymbols)
+```
+
+
+```{r}
+set.seed(42)
+pessoas <- c("diego", "humberto", "marcelo", "rafa")
+pessoas[sample(1:4)]
+```
+
+```{r}
+start_date <- '2018-01-01'
+# esses são ativos de fundos imobiliários que eu tenho
+# e queria saber se estou fazendo um péssimo investimento
+# ou apenas ruim.
+ativos <- c("VGIP11.SA", # fundo de fundos
+            "HGRE11.SA", #
+            "XPLG11.SA", # logistica
+            "LGCP11.SA", #
+            "MGFF11.SA", # 
+            "MALL11.SA") # shopping 
+```
+
+
+```{r}
+data = BatchGetSymbols(ativos,
+                       first.date = start_date,
+                       type.return = "log",
+                       freq.data = "daily",
+                       do.complete.data = TRUE,
+                       do.fill.missing.prices = TRUE)
+```
+
+Vamos preparar as bases de treino e teste
+
+```{r}
+
+
+ativo <- "MGFF11.SA"
+
+
+dados_completos <- data$df.tickers |> 
+  dplyr::filter(ticker == ativo) |> 
+  dplyr::select(ref.date, ret.closing.prices) |> 
+  tidyr::drop_na() |> 
+  dplyr::filter(ref.date > "2018-04-02") |> 
+  timetk::future_frame(
+    .length_out = 3,
+    .date_var = ref.date, .bind_data = TRUE
+  ) |> 
+  dplyr::mutate(ref.date = as.POSIXct(ref.date))
+
+da_train  <- dados_completos %>% 
+  tidyr::drop_na()
+
+da_future <- dados_completos %>% 
+  dplyr::filter(is.na(ret.closing.prices))
+
+```
+
+# descritivas bacanas
+
+- ACF/PACF dos retornos
+- visualizar os retornos ao quadrado
+- ACF/PACF dos retornos ao quadrado
+
+```{r}
+da_train |> 
+  dplyr::mutate(ret2 = ret.closing.prices^2) |> 
+  ggplot2::ggplot(ggplot2::aes(ref.date, ret2)) +
+  ggplot2::geom_line()
+```
+
+```{r}
+model_spec <-garchmodels::garch_reg(
+  mode = "regression",
+  arch_order = tune::tune(),
+  garch_order = tune::tune(),
+  ma_order = tune::tune(),
+  ar_order = tune::tune(),
+  tune_by = "sigmaFor"
+) %>%
+  parsnip::set_engine("rugarch")
+```
+
+Vamos fazer nosso workflow!
+
+```{r}
+recipe_spec <- recipes::recipe(
+  ret.closing.prices ~ ref.date, 
+  data = da_train
+)
+
+# Workflow
+wflw <- workflows::workflow() %>%
+  workflows::add_recipe(recipe_spec) %>%
+  workflows::add_model(model_spec)
+```
+
+Agora precisamos fazer a validação cruzada, e precisamos usar uma "generalização" do {resample} para isso
+
+```{r}
+resamples <- timetk::time_series_cv(
+  da_train,
+  date_var = ref.date,
+  initial = "1 year",
+  assess = "3 months",
+  skip = "1 month",
+  cumulative = TRUE,
+  slice_limit = 5
+)
+```
+
+
+```{r}
+timetk::plot_time_series_cv_plan(
+  resamples, 
+  .date_var = ref.date, 
+  .value = ret.closing.prices
+)
+```
+
+```{r}
+tune_results <- tune::tune_grid(
+  object     = wflw,
+  resamples  = resamples,
+  param_info = dials::parameters(wflw),
+  grid       = 5,
+  control    = tune::control_grid(
+    verbose = TRUE, 
+    allow_par = TRUE,
+    parallel_over = "everything"
+  )
+)
+```
+
+```{r}
+tune_results %>% 
+  tune::show_best(metric = "rmse")
+```
+
+ARMA(4,5)+GARCH(0,2) foi o melhor modelo segundo a grid de hiperparâmetros escolhida.
+
+```{r}
+# modelo final
+model_fit_garch <-garchmodels::garch_reg(
+  mode = "regression",
+  arch_order = 0,
+  garch_order = 2,
+  ma_order = 5,
+  ar_order = 4
+) %>%
+  parsnip::set_engine(
+    "rugarch", 
+    mean.model = list(include.mean = FALSE)
+  ) %>%
+  parsnip::fit(
+    ret.closing.prices ~ ref.date, 
+    data = da_train
+  )
+
+
+preds <- predict(model_fit_garch, da_future)
+
+```
+
+```{r}
+preds$.pred$sigmaFor
+```
+
+
