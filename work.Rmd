@@ -15,6 +15,7 @@ knitr::opts_chunk$set(echo = TRUE, cache=TRUE, warning = FALSE, results = "hide"
 library(garchmodels)
 library(timetk)
 library(tidyverse)
+library(tidymodels)
 library(BatchGetSymbols)
 library(forecast)
 library(tseries)
@@ -41,10 +42,12 @@ asset_returns <-
   BatchGetSymbols(my_stocks,
                 first.date = "2000-01-01",
                 bench.ticker = "^BVSP",
-                type.return = "log"
+                type.return = "log",
+                freq.data = "daily",
+                do.complete.data = TRUE,
+                do.fill.missing.prices = TRUE
                 )$df.tickers %>% 
-  select(ref.date, ticker, ret.closing.prices, price.close) %>% 
-  na.omit() 
+  select(ref.date, ticker, ret.closing.prices, price.close)
 
 asset_returns %>% 
   group_by(ticker) %>% 
@@ -125,20 +128,20 @@ for (t in tickers) {
 fit_ts_stock <- function (stock) {
   if (nrow(stock) > 0) {
     
-    # stock <- stock %>% 
-    #   timetk::future_frame(
-    #     .length_out = 3,
-    #     .date_var = ref.date,
-    #     .bind_data = TRUE
-    #   ) %>% 
-    #   mutate(ref.date = as.POSIXct(ref.date))
-    #   
-    # stock_train <- stock %>%
-    #     drop_na()
-    # 
-    # stock_future <- stock %>%
-    #   filter(is.na(ret.closing.prices))
-    # 
+    stock <- stock %>%
+      timetk::future_frame(
+        .length_out = 3,
+        .date_var = ref.date,
+        .bind_data = TRUE
+      ) %>%
+      mutate(ref.date = as.POSIXct(ref.date))
+
+    stock_train <- stock %>%
+        drop_na()
+
+    stock_future <- stock %>%
+      filter(is.na(ret.closing.prices))
+
     # stock_train %>%
     #   mutate(
     #     ret2 = ret.closing.prices ^ 2
@@ -148,61 +151,71 @@ fit_ts_stock <- function (stock) {
     #   ) +
     #   geom_line()
     # 
-    # stock_future %>% 
+    # stock_future %>%
     #   print
-    #   
-      
-  #   stock_model <- garchmodels::garch_reg(
-  #     mode = "regression",
-  #     arch_order = tune::tune(),
-  #     garch_order = tune::tune(),
-  #     ma_order = tune::tune(),
-  #     ar_order = tune::tune(),
-  #     tune_by = "sigmaFor"
-  #   ) %>% 
-  #     parsnip::set_engine("rugarch")
-  #   
-  #   stock_recipe <- recipes::recipe(
-  #     ret.closing.prices ~ ref.date,
-  #     data = stock_train
-  #   )
-  #   
-  #   stock_wflw <- workflow() %>% 
-  #     add_recipe(stock_recipe) %>% 
-  #     add_model(stock_model)
-  #   
-  #   stock_resamples <-  time_series_cv(
-  #       stock_train,
-  #       .date_var = ref.date,
-  #       .value = ret.closing.prices
-  #   )
-  #   
-  #   stock_tune_results <- tune_grid(
-  #     object = stock_wflw,
-  #     resamples = stock_resamples,
-  #     param_info = dials::parameters(stock_wflw),
-  #     grid = 5,
-  #     control = control_grid(
-  #       verbose = TRUE,
-  #       allow_par = TRUE,
-  #       parallel_over = "everything"
-  #     )
-  #   )
-  #   
-  #   
-  #   stock_tune_results %>% 
-  #     show_best(metric = "MAE")
+
+
+    stock_model <- garchmodels::garch_reg(
+      mode = "regression",
+      arch_order = tune::tune(),
+      garch_order = tune::tune(),
+      ma_order = tune::tune(),
+      ar_order = tune::tune(),
+      tune_by = "sigmaFor"
+    ) %>%
+      parsnip::set_engine("rugarch")
+
+    stock_recipe <- recipes::recipe(
+      ret.closing.prices ~ ref.date,
+      data = stock_train
+    )
+
+    stock_wflw <- workflow() %>%
+      add_recipe(stock_recipe) %>%
+      add_model(stock_model)
+
+    stock_resamples <-  time_series_cv(
+        stock_train,
+        date_var = ref.date,
+        initial = "1 year",
+        assess = "3 months",
+        skip = "1 month",
+        cumulative = TRUE,
+        slice_limit = 5
+    )
+
+    stock_tune_results <- tune_grid(
+      object = stock_wflw,
+      resamples = stock_resamples,
+      param_info = dials::parameters(stock_wflw),
+      grid = 5,
+      control = control_grid(
+        verbose = TRUE,
+        allow_par = TRUE,
+        parallel_over = "everything"
+      )
+    )
+
+
+    stock_tune_results %>%
+      tune::show_best(metric = "rmse")
   }
 } 
 
 
-for (t in tickers) {
-  df %>% 
-    filter(ticker == t) %>% 
-    select(ref.date, ret.closing.prices) %>% 
-    drop_na() %>% 
-    fit_ts_stock
-}
+asset_returns %>% 
+  filter(ticker == tickers[6]) %>% 
+  select(ref.date, ret.closing.prices) %>% 
+  drop_na() %>% 
+  fit_ts_stock
+
+# for (t in tickers) {
+#   asset_returns %>% 
+#     filter(ticker == t) %>% 
+#     select(ref.date, ret.closing.prices) %>% 
+#     drop_na() %>% 
+#     fit_ts_stock
+# }
 
 ```
 
