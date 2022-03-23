@@ -461,6 +461,9 @@ dlm_routine <- function (df, ticker_string, index_string) {
 # Evaluating garch
 ```{r}
 evaluate_garch <- function(ticker, data, mean.model, variance.model) {
+  print(paste("Ticker", ticker, "usando os modelos"))
+  print(mean.model)
+  print(variance.model)
   garch_spec <- ugarchspec(
     mean.model = mean.model,
     variance.model = variance.model,
@@ -469,7 +472,9 @@ evaluate_garch <- function(ticker, data, mean.model, variance.model) {
   
   garch_fit <- ugarchfit(spec = garch_spec, data = data$returns[-1])
   
-  tibble(ticker = ticker, fit = c(garch_fit), AIC = c(infocriteria(garch_fit)))
+  print(paste("Visualizando erros do modelo para o ticker", ticker))
+  print(garch_fit@fit$coef)
+  tibble(ticker = ticker, fit = c(garch_fit), AIC=list(as.vector(infocriteria(garch_fit))))
 }
 
 garch_forecast <- function(garch_fit) {
@@ -517,7 +522,7 @@ garchOrders <- tibble(
   ticker = asset_returns$ticker %>% 
     unique(),
   mean.model = list(
-    c(0, 0),
+    c(1, 1),
     c(0, 0),
     c(0, 0),
     c(0, 0),
@@ -525,27 +530,31 @@ garchOrders <- tibble(
     c(0, 0)
   ),
   variance.model = list(
-    c(0, 0),
-    c(0, 0),
-    c(0, 0),
-    c(0, 0),
-    c(0, 0),
-    c(0, 0)
+    c(1, 5),
+    c(1, 1),
+    c(1, 1),
+    c(1, 1),
+    c(1, 1),
+    c(1, 1)
   )
 )
 
 
-# models <- make_asset_garchs(asset_returns, garchOrders, tickers_filter_table)
-asset_returns %>% 
-  filter(str_detect(ticker, 'ITUB')) %>% 
-  make_asset_garchs(garchOrders)
+# # models <- 
+# asset_returns %>% 
+#   filter(str_detect(ticker, 'ITUB')) %>% 
+#   make_asset_garchs(garchOrders)
+
+result <- make_asset_garchs(asset_returns, garchOrders)
 ```
 
 
 ```{r}
+for (t in unique(asset_returns$ticker)) {
+  print(paste("Info criteria do ticker", t))
+  print(infocriteria((result %>% 
+    filter(ticker == t))$fit[[1]]))
+}
 
-(models %>% 
-  drop_na %>% 
-  arrange(desc(AIC)))$fit
 ```
 
