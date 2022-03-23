@@ -203,19 +203,13 @@ fit_ts_stock <- function (stock) {
 } 
 
 
-asset_returns %>% 
-  filter(ticker == tickers[6]) %>% 
-  select(ref.date, ret.closing.prices) %>% 
-  drop_na() %>% 
-  fit_ts_stock
-
-# for (t in tickers) {
-#   asset_returns %>% 
-#     filter(ticker == t) %>% 
-#     select(ref.date, ret.closing.prices) %>% 
-#     drop_na() %>% 
-#     fit_ts_stock
-# }
+for (t in tickers) {
+  asset_returns %>%
+    filter(ticker == t) %>%
+    select(ref.date, ret.closing.prices) %>%
+    drop_na() %>%
+    fit_ts_stock
+}
 
 ```
 
