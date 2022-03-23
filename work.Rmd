@@ -25,6 +25,7 @@ library(recipes)
 library(workflows)
 library(tidymodels)
 library(FinTS)
+library(rugarch)
 ```
 
 
@@ -45,12 +46,23 @@ asset_returns <-
   select(ref.date, ticker, ret.closing.prices, price.close) %>% 
   drop_na()
 ``` 
+
 ```{r}
 tickers_filter_table = tibble(
       stock = asset_returns$ticker %>% 
         unique,
-      add_date = c(0, 1000, 2000, 0, 3000, 4000)
+      add_date = c(0, 2300, 2000, 0, 3000, 4000)
     )
+
+
+do_filter_ref_date <- function(stock, filter_table) {
+  stock %>% 
+      filter(ref.date > (
+        stock$ref.date[1] + 
+          filter_table$add_date[filter_table$stock == stock$ticker[1]]
+        )
+      )
+}
 ```
 
  
@@ -73,18 +85,20 @@ plot_returns <- function(
         )
       )
     
-    par(mfrow=c(1, 2))
+    par(mfrow=c(1, 3))
     
-    ts.plot(df_plot$price.close)
+    ts.plot(df_plot$price.close, main = paste("Ticker", stock$ticker[1], " closing prices"))
     ts.plot(
       df_plot$ret.closing.prices, 
-      main = paste("Ticker", stock$ticker[1])
-            ) 
+      main = paste("Ticker", stock$ticker[1], "ret")
+            )
+    ts.plot(
+      df_plot$ret.closing.prices^2,
+      main = paste("Ticker", stock$ticker[1], "ret^2")
+    )
     par(mfrow=c(1,1))
   }
 }
-
-
 
 plot_asset_returns <- function (asset_returns, filter_table = NA) {
   tickers <- asset_returns$ticker %>%
@@ -117,13 +131,14 @@ descriptive_asset_evaluation <- function (asset_returns) {
     df_box <- asset_returns %>% 
       filter(ticker == t)
     
+    
+    
     acf(df_box$ret.closing.prices, main = paste("ACF", t)) %>% 
       autoplot() %>% 
       theme(
         plot.title = element_text(vjust = -50)
       )
     
-    print(t)
     print(box_test(df_box$ret.closing.prices))
     print(adf.test(df_box$ret.closing.prices))
     print(ArchTest(df_box$ret.closing.prices))
@@ -161,7 +176,6 @@ calculate_portfolio_covariability <- function(portfolio, market) {
 
 
 ```{r}
-
 fit_ts_stock <- function (stock) {
     if (nrow(stock) > 0) {
       
@@ -232,8 +246,6 @@ evaluate_assets <- function(tickers,
                             market = "^BVSP",
                             first.date = "2000-01-01", 
                             last.date = Sys.Date(),
-                            do.complete.date = TRUE,
-                            do.fill.missing.prices = TRUE,
                             assets_weights = NULL
                             ) {
   asset_returns <- BatchGetSymbols(tickers,
@@ -241,9 +253,7 @@ evaluate_assets <- function(tickers,
                 last.date = last.date,
                 bench.ticker = bench_ticker,
                 type.return = "log",
-                freq.data = "daily",
-                do.complete.data = do.complete.date,
-                do.fill.missing.prices = do.fill.missing.prices
+                freq.data = "daily"
                 )$df.tickers %>% 
   select(ref.date, ticker, ret.closing.prices) %>% 
     drop_na()
@@ -273,13 +283,10 @@ evaluate_assets <- function(tickers,
     select(ref.date, ret.closing.prices) %>%
     drop_na()
   
-  
-  print(market_ret)
   ts.plot(portfolio_ret$returns)
   ts.plot(market_ret$ret.closing.prices)
   
-  print(
-    paste("Calculando covariabilidade do portfolio", calculate_portfolio_covariability(portfolio_ret, market_ret)))
+  calculate_portfolio_covariability(portfolio_ret, market_ret)
   
   
   betas <- asset_returns %>%
@@ -291,21 +298,19 @@ evaluate_assets <- function(tickers,
 }
 
 
-evaluate_assets(my_stocks)
+# evaluate_assets(my_stocks)
 
 ```
 
-## Ajustando volatilidade do portfólio
+# Ajustando volatilidade do portfólio
 
 ```{r}
 
 
 ```
 
-  
 
-
-## Dynamic model
+# Dynamic model
 
 ```{r}
 dlm_routine <- function (df, ticker_string, index_string) {
@@ -424,5 +429,90 @@ dlm_routine <- function (df, ticker_string, index_string) {
   
   date
 }
+```
+
+# Evaluating garch
+```{r}
+evaluate_garch <- function(ticker, data, mean.model, variance.model) {
+  garch_spec <- ugarchspec(
+    mean.model = mean.model,
+    variance.model = variance.model,
+    distribution.model = "std"
+  ) 
+  
+  garch_fit <- ugarchfit(spec = garch_spec, data = data$returns[-1])
+  
+  tibble(ticker = ticker, fit = c(garch_fit), AIC = infocriteria(garch_fit))
+}
+
+garch_forecast <- function(garch_fit) {
+  garch_forecast <- ugarchforecast(garch_fit, n.ahead = 1)
+  garch_forecast %>% 
+    plot
+}
+
+
+make_asset_garchs <- function(asset_returns, garchOrders, tickers_filter_table) {
+  if (nrow(garchOrders) > 0 & nrow(asset_returns) > 0) {
+    tickers <- asset_returns$ticker %>% 
+      unique
+    
+    models <- tibble(ticker = NA, fit = NA, AIC = NA)
+    
+    print(tickers)
+    for (t in tickers) {
+      ret <- (asset_returns %>% 
+        filter(ticker == t) %>% 
+          drop_na('ret.closing.prices') %>% 
+          mutate(
+            returns = ret.closing.prices
+          )) %>% 
+          do_filter_ref_date(tickers_filter_table)
+      
+      mean.model <- (garchOrders %>% 
+        filter(ticker == t))$mean.model
+      
+      variance.model <- (garchOrders %>% 
+        filter(ticker == t))$variance.model
+
+      models <- models %>% 
+        add_row(evaluate_garch(t, ret, mean.model, variance.model))
+    }
+    
+    return (models)
+  } else {
+    print("Assets e ordens dos garchs são necessários")
+  }
+}
+
+
+garchOrders <- tibble(
+  ticker = asset_returns$ticker %>% 
+    unique(),
+  mean.model = list(
+    c(0, 0),
+    c(0, 0),
+    c(0, 0),
+    c(0, 0),
+    c(0, 0),
+    c(0, 0)
+  ),
+  variance.model = list(
+    c(0, 0),
+    c(0, 0),
+    c(0, 0),
+    c(0, 0),
+    c(0, 0),
+    c(0, 0)
+  )
+)
+
+make_asset_garchs(asset_returns, garchOrders, tickers_filter_table)
+```
+
+
+```{r}
+
+
 ```
 
