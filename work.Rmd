@@ -6,13 +6,12 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, cache=TRUE, warning = FALSE, results = "hide")
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, results = "hide")
 ```
 
 # Libraries
 
 ```{r echo=FALSE}
-library(garchmodels)
 library(timetk)
 library(tidyverse)
 library(tidymodels)
@@ -20,200 +19,293 @@ library(BatchGetSymbols)
 library(forecast)
 library(tseries)
 library(feasts)
+library(tidyquant)
 library(tidyr)
 library(recipes)
 library(workflows)
 library(tidymodels)
+library(FinTS)
 ```
 
 
 # Stocks gathering
 ```{r}
-stocks <- c("ibov3", "ENBR3", "")
-
-# "VALE3.SA",
 my_stocks <- c("ITUB3.SA", "ENBR3.SA",
                "FLRY3.SA", "B3SA3.SA", "BBDC3.SA",
                "EGIE3.SA", "TAEE11.SA", "WEGE3.SA", 
-               "PSSA3.SA"
-               )
+               "PSSA3.SA")
 
 asset_returns <- 
   BatchGetSymbols(my_stocks,
                 first.date = "2000-01-01",
                 bench.ticker = "^BVSP",
                 type.return = "log",
-                freq.data = "daily",
-                do.complete.data = TRUE,
-                do.fill.missing.prices = TRUE
+                freq.data = "daily"
                 )$df.tickers %>% 
-  select(ref.date, ticker, ret.closing.prices, price.close)
-
-asset_returns %>% 
-  group_by(ticker) %>% 
-  count()
+  select(ref.date, ticker, ret.closing.prices, price.close) %>% 
+  drop_na()
 ``` 
+```{r}
+tickers_filter_table = tibble(
+      stock = asset_returns$ticker %>% 
+        unique,
+      add_date = c(0, 1000, 2000, 0, 3000, 4000)
+    )
+```
 
  
 # Retornos e autocorrelação
 
 ```{r}
 
-plot_returns <- function (stock) ts.plot(stock)
-
-
-tickers <- asset_returns$ticker %>% 
-  unique
-
-
-for (t in tickers) {
-  df <- asset_returns %>% 
-    filter(ticker == t)
-  
-  if (t == "ENBR3.SA") {
-    df <- df %>%
-      filter(ref.date > (df$ref.date[1] + 2000))
-  }
-  
-  if (t == "WEGE3.SA")  {
-    df <- df %>% 
-      filter(ref.date > (df$ref.date[1] + 2000))
-  }
-  
-  
-  if (t == "WEGE3.SA")  {
-    df <- df %>% 
-      filter(ref.date > (df$ref.date[1] + 1000))
-  }
-  
-  
-  par(mfrow=c(1, 2))
-  
-  ts.plot(df$price.close)
-  ts.plot(df$ret.closing.prices, main=paste("Ticker", t)) 
-  par(mfrow=c(1,1))
+plot_returns <- function(
+    stock, 
+    filter_table = tibble(
+      stock = c(),
+      add_date = c()
+    )
+  ) {
+  if (nrow(stock) > 0) {
+    df_plot <- stock %>% 
+      filter(ref.date > (
+        stock$ref.date[1] + 
+          filter_table$add_date[filter_table$stock == stock$ticker[1]]
+        )
+      )
     
+    par(mfrow=c(1, 2))
+    
+    ts.plot(df_plot$price.close)
+    ts.plot(
+      df_plot$ret.closing.prices, 
+      main = paste("Ticker", stock$ticker[1])
+            ) 
+    par(mfrow=c(1,1))
+  }
 }
 
+
+
+plot_asset_returns <- function (asset_returns, filter_table = NA) {
+  tickers <- asset_returns$ticker %>%
+    unique
+   
+  if (is.na(filter_table)) {
+    filter_table = tibble(
+      stock = tickers,
+      add_date = c(0)
+    )  
+  }
+  
+
+  for (t in tickers) {
+      asset_returns %>% 
+        filter(ticker == t) %>% 
+        plot_returns(
+          filter_table = filter_table
+        )
+    }
+}
+
+box_test <- function (df, lag = 1, type = 'Ljung-Box') Box.test(df, lag = lag, type = type)
+
+descriptive_asset_evaluation <- function (asset_returns) {
+  tickers <- asset_returns$ticker %>% 
+    unique
+  
+  for (t in tickers) {
+    df_box <- asset_returns %>% 
+      filter(ticker == t)
+    
+    acf(df_box$ret.closing.prices, main = paste("ACF", t)) %>% 
+      autoplot() %>% 
+      theme(
+        plot.title = element_text(vjust = -50)
+      )
+    
+    print(t)
+    print(box_test(df_box$ret.closing.prices))
+    print(adf.test(df_box$ret.closing.prices))
+    print(ArchTest(df_box$ret.closing.prices))
+  }
+}
+
+calculate_assets_beta <- function (asset_returns) {
+  asset_returns %>%
+    group_by(ticker) %>%
+    do(model = lm(ret.closing.prices ~ market_ret$ret.closing.prices,
+              data = .))
+}
+
+```
+
+```{r}
+plot_asset_returns(asset_returns, filter_table = tickers_filter_table)
 ```
 
 Os retornos aparentemente são estacionários. Iremos fazer o teste de ljung-box para confirmar o ruído branco nos resíduos e também realizar o teste de raíz unitária.
 
 
 ```{r, results = "show"}
-
-box_test <- function (df, lag = 1, type = 'Ljung-Box') Box.test(df, lag = lag, type = type)
-
-for (t in tickers) {
-  df <- asset_returns %>% 
-    filter(ticker == t)
-  
-  acf(df$ret.closing.prices, main = paste("ACF", t)) %>% 
-    autoplot() %>% 
-    theme(
-      plot.title = element_text(vjust = -50)
-    )
-  
-  print(t)
-  print(box_test(df$ret.closing.prices))
-  print(adf.test(df$ret.closing.prices))
-}
-
+descriptive_asset_evaluation(asset_returns)
 ```
 
 # Busca por melhor modelo a partir do tune
 
 ```{r}
-
-fit_ts_stock <- function (stock) {
-  if (nrow(stock) > 0) {
-    
-    stock <- stock %>%
-      timetk::future_frame(
-        .length_out = 3,
-        .date_var = ref.date,
-        .bind_data = TRUE
-      ) %>%
-      mutate(ref.date = as.POSIXct(ref.date))
-
-    stock_train <- stock %>%
-        drop_na()
-
-    stock_future <- stock %>%
-      filter(is.na(ret.closing.prices))
-
-    # stock_train %>%
-    #   mutate(
-    #     ret2 = ret.closing.prices ^ 2
-    #   ) %>%
-    #   ggplot(
-    #     aes(ref.date, ret2)
-    #   ) +
-    #   geom_line()
-    # 
-    # stock_future %>%
-    #   print
-
-
-    stock_model <- garchmodels::garch_reg(
-      mode = "regression",
-      arch_order = tune::tune(),
-      garch_order = tune::tune(),
-      ma_order = tune::tune(),
-      ar_order = tune::tune(),
-      tune_by = "sigmaFor"
-    ) %>%
-      parsnip::set_engine("rugarch")
-
-    stock_recipe <- recipes::recipe(
-      ret.closing.prices ~ ref.date,
-      data = stock_train
-    )
-
-    stock_wflw <- workflow() %>%
-      add_recipe(stock_recipe) %>%
-      add_model(stock_model)
-
-    stock_resamples <-  time_series_cv(
-        stock_train,
-        date_var = ref.date,
-        initial = "1 year",
-        assess = "3 months",
-        skip = "1 month",
-        cumulative = TRUE,
-        slice_limit = 5
-    )
-
-    stock_tune_results <- tune_grid(
-      object = stock_wflw,
-      resamples = stock_resamples,
-      param_info = dials::parameters(stock_wflw),
-      grid = 5,
-      control = control_grid(
-        verbose = TRUE,
-        allow_par = TRUE,
-        parallel_over = "everything"
-      )
-    )
-
-
-    stock_tune_results %>%
-      tune::show_best(metric = "rmse")
-  }
-} 
-
-
-for (t in tickers) {
-  asset_returns %>%
-    filter(ticker == t) %>%
-    select(ref.date, ret.closing.prices) %>%
-    drop_na() %>%
-    fit_ts_stock
+calculate_portfolio_covariability <- function(portfolio, market) {
+  cov(portfolio$returns, market$ret.closing.prices) / var(market$ret.closing.prices)
 }
 
 ```
 
 
+```{r}
+
+fit_ts_stock <- function (stock) {
+    if (nrow(stock) > 0) {
+      
+      stock <- stock %>%
+        timetk::future_frame(
+          .length_out = 3,
+          .date_var = ref.date,
+          .bind_data = TRUE
+        ) %>%
+        mutate(ref.date = as.POSIXct(ref.date))
+  
+      stock_train <- stock %>%
+          drop_na()
+  
+      stock_future <- stock %>%
+        filter(is.na(ret.closing.prices))
+  
+  
+      stock_model <- garchmodels::garch_reg(
+        mode = "regression",
+        arch_order = tune::tune(),
+        garch_order = tune::tune(),
+        ma_order = tune::tune(),
+        ar_order = tune::tune(),
+        tune_by = "sigmaFor"
+      ) %>%
+        parsnip::set_engine("rugarch")
+  
+      stock_recipe <- recipes::recipe(
+        ret.closing.prices ~ ref.date,
+        data = stock_train
+      )
+  
+      stock_wflw <- workflow() %>%
+        add_recipe(stock_recipe) %>%
+        add_model(stock_model)
+  
+      stock_resamples <-  time_series_cv(
+          stock_train,
+          date_var = ref.date,
+          initial = "1 year",
+          assess = "3 months",
+          skip = "1 month",
+          cumulative = TRUE,
+          slice_limit = 5
+      )
+  
+      stock_tune_results <- tune_grid(
+        object = stock_wflw,
+        resamples = stock_resamples,
+        param_info = dials::parameters(stock_wflw),
+        grid = 5,
+        control = control_grid(
+          verbose = TRUE,
+          allow_par = TRUE,
+          parallel_over = "everything"
+        )
+      )
+  
+  
+      stock_tune_results %>%
+        tune::show_best(metric = "rmse")
+    }
+} 
+
+evaluate_assets <- function(tickers, 
+                            bench_ticker = "^BVSP", 
+                            market = "^BVSP",
+                            first.date = "2000-01-01", 
+                            last.date = Sys.Date(),
+                            do.complete.date = TRUE,
+                            do.fill.missing.prices = TRUE,
+                            assets_weights = NULL
+                            ) {
+  asset_returns <- BatchGetSymbols(tickers,
+                first.date = first.date,
+                last.date = last.date,
+                bench.ticker = bench_ticker,
+                type.return = "log",
+                freq.data = "daily",
+                do.complete.data = do.complete.date,
+                do.fill.missing.prices = do.fill.missing.prices
+                )$df.tickers %>% 
+  select(ref.date, ticker, ret.closing.prices) %>% 
+    drop_na()
+  
+  tickers <- asset_returns$ticker %>% 
+    unique
+    
+  for (t in tickers) {
+    asset_returns %>%
+      filter(ticker == t) %>%
+      select(ref.date, ret.closing.prices) %>%
+      drop_na()
+  }
+  
+  
+  portfolio_ret <- asset_returns %>%
+  tq_portfolio(assets_col  = ticker,
+               returns_col = ret.closing.prices,
+               weights     = assets_weights,
+               col_rename  = "returns")
+  market_ret <-
+    BatchGetSymbols(market,
+               first.date = first.date,
+               last.date = last.date,
+               freq.data = "daily",
+               type.return = "log")$df.tickers %>%
+    select(ref.date, ret.closing.prices) %>%
+    drop_na()
+  
+  
+  print(market_ret)
+  ts.plot(portfolio_ret$returns)
+  ts.plot(market_ret$ret.closing.prices)
+  
+  print(
+    paste("Calculando covariabilidade do portfolio", calculate_portfolio_covariability(portfolio_ret, market_ret)))
+  
+  
+  betas <- asset_returns %>%
+    group_by(ticker) %>%
+    do(model = lm(ret.closing.prices ~ market_ret$ret.closing.prices,
+              data = .))
+  
+  betas$ticker
+}
+
+
+evaluate_assets(my_stocks)
+
+```
+
+## Ajustando volatilidade do portfólio
+
+```{r}
+
+
+```
+
+  
+
+
+## Dynamic model
 
 ```{r}
 dlm_routine <- function (df, ticker_string, index_string) {
