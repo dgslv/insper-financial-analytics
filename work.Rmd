@@ -354,11 +354,11 @@ garch_forecast <- function(garch_fit) {
 }
 
 make_asset_garchs <- function(asset_returns, bestOrders) {
-  if (nrow(garchOrders) > 0 & nrow(asset_returns) > 0) {
+  if (nrow(bestOrders) > 0 & nrow(asset_returns) > 0) {
     tickers <- asset_returns$ticker %>% 
       unique
     
-    models <- tibble(ticker = NA, fit = NA)
+    models <- tibble(ticker = NA, model = NA)
     
     for (t in tickers) {
       print(paste("Rodando garch para a ação ", t))
