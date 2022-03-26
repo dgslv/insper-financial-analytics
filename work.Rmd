@@ -28,6 +28,7 @@ library(FinTS)
 library(rugarch)
 library(dlm)
 library(garchmodels)
+library(modeltime)
 ```
 
 
@@ -214,17 +215,23 @@ calculate_portfolio_covariability <- function(tib_returns) {
 
 ```
 
-## garchmodels que nao funciona 
+## Procurando o melhor modelo usando garchmodels
+
 ```{r}
-fit_ts_stock <- function (stock) {
-    if (nrow(stock) > 0) {
-      stock <- stock %>%
+
+make_future_frame <- function (stock) {
+  stock %>%
         timetk::future_frame(
           .length_out = 3,
           .date_var = ref.date,
           .bind_data = TRUE
         ) %>%
         mutate(ref.date = as.POSIXct(ref.date))
+}
+
+fit_ts_stock <- function (stock) {
+    if (nrow(stock) > 0) {
+      stock <- make_future_frame(stock)
   
       stock_train <- stock %>%
           drop_na()
@@ -284,13 +291,14 @@ fit_ts_stock <- function (stock) {
 } 
 
 
-
 results <- asset_returns %>% 
   group_split(ticker) %>% 
   map(fit_ts_stock)
 ```
 
-Obtendo melhores modelos 
+
+## Obtendo melhores modelos 
+
 
 ```{r}
 bestOrders <- data.frame(ticker = NA, 
@@ -326,7 +334,6 @@ bestOrders
 ```{r}
 evaluate_garch <- function(ticker, data, bestTickerOrder) {
   print(paste("Ticker", ticker, "usando os modelos"))
-  print(bestTickerOrder)
   
   garch_fit <- garchmodels::garch_reg(
       mode = "regression",
@@ -347,11 +354,6 @@ evaluate_garch <- function(ticker, data, bestTickerOrder) {
   garch_fit
 }
 
-garch_forecast <- function(garch_fit) {
-  garch_forecast <- ugarchforecast(garch_fit, n.ahead = 1)
-  garch_forecast %>% 
-    plot
-}
 
 make_asset_garchs <- function(asset_returns, bestOrders) {
   if (nrow(bestOrders) > 0 & nrow(asset_returns) > 0) {
@@ -375,10 +377,10 @@ make_asset_garchs <- function(asset_returns, bestOrders) {
       fit_result <- evaluate_garch(t, ret, ticker_best)
       
       models <- models %>% 
-        add_row(ticker = t, model = c(fit_result))
+        add_row(ticker = t, model = list(fit_result))
     }
     
-    models
+    models %>% drop_na()
   } else {
     print("Assets e ordens dos garchs são necessários")
   }
@@ -386,6 +388,109 @@ make_asset_garchs <- function(asset_returns, bestOrders) {
 
 
 result <- make_asset_garchs(asset_returns, bestOrders)
+
+```
+
+## Obtendo as previsões futuras
+
+```{r}
+make_stock_forecasts <- function(assets, models) {
+  tickers <- assets$ticker %>% 
+      unique
+  
+  pred_tb <- tibble(ticker = NA, preds = NA)
+  
+  for (t in tickers) {
+    stock_future <- assets %>% 
+      filter(ticker == t) %>% 
+      make_future_frame() %>% 
+      filter(is.na(ret.closing.prices))
+    
+    stock_model <- (models %>%
+      filter(ticker == t))$model[[1]]
+    
+    pred_tb <- pred_tb %>% 
+      add_row(ticker = t, preds = list(predict(stock_model, stock_future)))
+  }
+  
+  pred_tb %>% 
+    drop_na()
+} 
+
+
+plot_assets_forecasts <- function(data) {
+  
+  for (t in unique(data$ticker)) {
+    data_plot <- (data %>% 
+      filter(ticker == t))$preds[[1]]$.pred$seriesFor %>% 
+      as_tibble() %>% 
+      mutate(
+        ref.date = Sys.Date() + c(-1:1),
+        type = "predict"
+      ) %>%
+      setNames(c("ret.closing.prices", "ref.date", "type"))
+    
+    var_plot <- (data %>% 
+      filter(ticker == t))$preds[[1]]$.pred$sigmaFor %>% 
+      as_tibble() %>% 
+      mutate(
+        ref.date = Sys.Date() + c(-1:1),
+      ) %>%
+      setNames(c("var", "ref.date"))   
+    
+    
+    data_plot <- data_plot %>% 
+      inner_join(var_plot, by = 'ref.date') %>% 
+      mutate(
+        inf = ret.closing.prices - var,
+        upper = ret.closing.prices + var,
+      )
+    
+    data_plot <- data_plot %>% 
+      bind_rows(asset_returns %>%
+                  filter(ticker == t) %>%
+                  mutate(type = "actual")) %>%
+      arrange(ref.date) %>%
+      dplyr::slice_tail(n = 10)
+
+    print(data_plot %>%
+      ggplot(aes(
+        x = ref.date,
+        y = ret.closing.prices,
+        color = type
+      )) +
+      geom_line(
+        data = data_plot %>%
+          mutate(
+            type = "actual"
+          )
+      ) +
+      geom_ribbon(
+        aes(
+          ymin = inf,
+          ymax = upper,
+          color = NULL
+        ),
+        fill = "orange",
+        alpha = 0.1
+      ) +
+      geom_line() +
+      geom_point() +
+        labs(
+          title = paste("Forecasting", t)
+        ))
+  }
+}
+
+assets_forecasts <- asset_returns %>% 
+  make_stock_forecasts(result)
+
+
+assets_forecasts %>%
+  plot_assets_forecasts()
+
+
+assets_forecasts$preds[[1]]$.pred$sigmaFor
 ```
 
 # Analisando CAPM
@@ -594,16 +699,5 @@ dlm_routine <- function (df, ticker_string, index_string) {
 }
 
 dlm_routine(asset_returns, ticker_string = "ITUB3.SA", index_string = "^BVSP")
-```
-
-
-
-```{r}
-for (t in unique(asset_returns$ticker)) {
-  print(paste("Info criteria do ticker", t))
-  print(infocriteria((result %>% 
-    filter(ticker == t))$fit[[1]]))
-}
-
 ```
 
