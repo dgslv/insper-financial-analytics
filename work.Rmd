@@ -258,14 +258,14 @@ fit_ts_stock <- function (stock) {
           assess = "3 months",
           skip = "1 month",
           cumulative = TRUE,
-          slice_limit = 5
+          slice_limit = 1
       )
 
       stock_tune_results <- tune_grid(
         object = stock_wflw,
         resamples = stock_resamples,
         param_info = dials::parameters(stock_wflw),
-        grid = 5,
+        grid = 1,
         control = control_grid(
           verbose = TRUE,
           allow_par = TRUE,
@@ -589,7 +589,28 @@ portfolio_ret <- make_portfolio_market(asset_returns)$portfolio[[1]] %>%
     ret.closing.prices = returns
   )
 
-best_portfolio_orders <- fit_ts_stock(portfolio_ret)
+best_portfolio_orders <- fit_ts_stock(portfolio_ret) 
+
+
+best_portfolio_orders <- best_portfolio_orders %>% 
+  distinct(ticker, .keep_all = TRUE)
+
+```
+
+
+```{r}
+result_port <- make_asset_garchs(portfolio_ret, best_portfolio_orders)
+
+```
+
+
+```{r}
+portfolio_forecasts <- asset_returns %>% 
+  make_stock_forecasts(result_port)
+
+
+portfolio %>%
+  plot_assets_forecasts()
 ```
 
 # Dynamic model - CAPM
