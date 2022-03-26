@@ -6,7 +6,7 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, results = "hide", cache = TRUE)
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, results = "hide", cache = TRUE)
 ```
 
 # Libraries
@@ -35,17 +35,21 @@ library(modeltime)
 # Stocks gathering
 
 ```{r}
-tickers <- c("FB", "AAPL", "AMZN", "NFLX", "GOOG", "MSFT")
+tickers <- c("ITUB3.SA", "ENBR3.SA",
+               "ELET3.SA", "BBAS3.SA", "BBDC3.SA",
+               "EGIE3.SA")
 
 all_asset_returns <- 
   BatchGetSymbols(tickers,
-                first.date = "2012-06-01",
+                first.date = "2010-01-01",
+                bench.ticker = "^BVSP",
                 type.return = "log",
                 freq.data = "daily"
                 )$df.tickers %>% 
   select(ref.date, ticker, ret.closing.prices, price.close) %>% 
   drop_na()
 ``` 
+
 
 ```{r}
 tickers_filter_table = tibble(
@@ -79,6 +83,8 @@ for (t in unique(all_asset_returns$ticker)) {
               drop_na('ret.closing.prices') %>% 
               do_filter_ref_date(tickers_filter_table))
 }
+
+unique(asset_returns$ticker)
 ```
 
  
@@ -311,37 +317,31 @@ bestOrders <- bestOrders %>%
   drop_na()
 ```
 
-```{r}
-bestOrders
-```
+
 
 ## Ajustando garch para os modelos após encontrar os melhores resultados
 
 ```{r}
 evaluate_garch <- function(ticker, data, bestTickerOrder) {
-  print(paste("Ticker", ticker, "usando os modelos"))
-  
-  tryCatch({
-    garch_fit <- garchmodels::garch_reg(
-        mode = "regression",
-        arch_order = bestTickerOrder$arch_order,
-        garch_order = bestTickerOrder$garch_order,
-        ma_order = bestTickerOrder$ma_order,
-        ar_order = bestTickerOrder$ar_order
+  print(paste("Ticker", ticker, "- avaliação"))
+ 
+  garch_fit <- garchmodels::garch_reg(
+      mode = "regression",
+      arch_order = bestTickerOrder$arch_order,
+      garch_order = bestTickerOrder$garch_order,
+      ma_order = bestTickerOrder$ma_order,
+      ar_order = bestTickerOrder$ar_order
+    ) %>%
+      parsnip::set_engine(
+        "rugarch", 
+        mean.model = list(include.mean = FALSE)
       ) %>%
-        parsnip::set_engine(
-          "rugarch", 
-          mean.model = list(include.mean = FALSE)
-        ) %>%
-        parsnip::fit(
-          ret.closing.prices ~ ref.date, 
-          data = data
-        )
-    
-    garch_fit
-  }, error=function(error){
-    print(data)
-  })
+      parsnip::fit(
+        ret.closing.prices ~ ref.date, 
+        data = data
+      )
+  
+  garch_fit
 }
 
 
@@ -376,6 +376,11 @@ make_asset_garchs <- function(asset_returns, bestOrders) {
 }
 ```
 
+
+```{r}
+result <- make_asset_garchs(asset_returns, bestOrders)
+```
+
 ## Obtendo as previsões futuras
 
 ```{r}
@@ -391,20 +396,21 @@ make_stock_forecasts <- function(assets, models) {
       make_future_frame() %>% 
       filter(is.na(ret.closing.prices))
     
-    stock_model <- (models %>%
-      filter(ticker == t))$model[[1]]
-    
-    pred_tb <- pred_tb %>% 
-      add_row(ticker = t, preds = list(predict(stock_model, stock_future)))
+  
+      stock_model <- (models %>%
+        filter(ticker == t))$model[[1]]
+      
+      pred_tb <- pred_tb %>% 
+        add_row(ticker = t, preds = list(predict(stock_model, stock_future)))
   }
   
   pred_tb %>% 
     drop_na()
-} 
+}   
+  
 
 
 plot_assets_forecasts <- function(data) {
-  
   for (t in unique(data$ticker)) {
     data_plot <- (data %>% 
       filter(ticker == t))$preds[[1]]$.pred$seriesFor %>% 
@@ -419,7 +425,7 @@ plot_assets_forecasts <- function(data) {
       filter(ticker == t))$preds[[1]]$.pred$sigmaFor %>% 
       as_tibble() %>% 
       mutate(
-        ref.date = Sys.Date() + c(-1:1),
+        ref.date = Sys.Date() + c(0:2),
       ) %>%
       setNames(c("var", "ref.date"))   
     
@@ -437,7 +443,7 @@ plot_assets_forecasts <- function(data) {
                   mutate(type = "actual")) %>%
       arrange(ref.date) %>%
       dplyr::slice_tail(n = 10)
-
+    
     print(data_plot %>%
       ggplot(aes(
         x = ref.date,
@@ -473,10 +479,8 @@ assets_forecasts <- asset_returns %>%
 
 assets_forecasts %>%
   plot_assets_forecasts()
-
-
-assets_forecasts$preds[[1]]$.pred$sigmaFor
 ```
+
 
 # Analisando CAPM
 
@@ -552,13 +556,14 @@ evaluate_assets <- function(tickers,
 }
 
 
-assets_lm <- evaluate_assets(my_stocks)
+assets_lm <- evaluate_assets(tickers)
 
 assets_lm$betas <- map(assets_lm$model, coef) %>%
   map_dbl(2)
 
 assets_lm
 ```
+
 ## Calculando beta do portfolio
 
 ```{r}
@@ -590,7 +595,7 @@ best_portfolio_orders <- fit_ts_stock(portfolio_ret)
 # Dynamic model - CAPM
 
 ```{r}
-dlm_routine <- function (df, ticker_string, index_string) {
+dlm_routine <- function (df, ticker_string, index_string = '^BVSP') { 
   my_dlm = function(parm, x.mat) {
     parm = exp(parm)
     return (
@@ -716,12 +721,10 @@ dlm_routine <- function (df, ticker_string, index_string) {
 }
 
 
-index_string = "^GSPC"
-
 tickers <- unique(asset_returns$ticker)
 
 for (t in tickers) {
-  dlm_routine(asset_returns, ticker_string = t, index_string)
+  dlm_routine(asset_returns, ticker_string = t)
 }
 
 ```
