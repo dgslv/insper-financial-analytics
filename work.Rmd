@@ -33,6 +33,12 @@ library(modeltime)
 
 
 # Stocks gathering
+
+```{r}
+
+tickers <- read_csv('./bestOrders.csv')[-1]$ticker
+```
+
 ```{r}
 my_stocks <- c("ITUB3.SA", "ENBR3.SA",
                "FLRY3.SA", "B3SA3.SA", "BBDC3.SA",
@@ -40,22 +46,24 @@ my_stocks <- c("ITUB3.SA", "ENBR3.SA",
                "PSSA3.SA", "^BVSP")
 
 all_asset_returns <- 
-  BatchGetSymbols(my_stocks,
-                first.date = "2000-01-01",
-                bench.ticker = "^BVSP",
+  BatchGetSymbols(tickers,
+                first.date = "2012-06-01",
+                # bench.ticker = "^BVSP",
                 type.return = "log",
                 freq.data = "daily"
                 )$df.tickers %>% 
   select(ref.date, ticker, ret.closing.prices, price.close) %>% 
   drop_na()
 
+
+unique(all_asset_returns$ticker)
 ``` 
 
 ```{r}
 tickers_filter_table = tibble(
       stock = all_asset_returns$ticker %>% 
         unique,
-      add_date = c(0, 2300, 2000, 0, 3000, 4000, 0)
+      add_date = c(0, 0, 0, 0, 0, 0)
     )
 
 
@@ -206,15 +214,6 @@ descriptive_asset_evaluation(asset_returns)
 visualize_residual_distribution(asset_returns)
 ```
 
-# Busca por melhor modelo a partir do tune
-
-```{r}
-calculate_portfolio_covariability <- function(tib_returns) {
-    cov(tib_returns$returns, tib_returns$ret.closing.prices) / var(tib_returns$ret.closing.prices)
-}
-
-```
-
 ## Procurando o melhor modelo usando garchmodels
 
 ```{r}
@@ -279,8 +278,6 @@ fit_ts_stock <- function (stock) {
           parallel_over = "everything"
         )
       )
-
-
       
       ticker <- unique(stock$ticker)[1]
       
@@ -289,8 +286,9 @@ fit_ts_stock <- function (stock) {
       stock_tune_results
     }
 } 
+```
 
-
+```{r}
 results <- asset_returns %>% 
   group_split(ticker) %>% 
   map(fit_ts_stock)
@@ -335,23 +333,27 @@ bestOrders
 evaluate_garch <- function(ticker, data, bestTickerOrder) {
   print(paste("Ticker", ticker, "usando os modelos"))
   
-  garch_fit <- garchmodels::garch_reg(
-      mode = "regression",
-      arch_order = bestTickerOrder$arch_order,
-      garch_order = bestTickerOrder$garch_order,
-      ma_order = bestTickerOrder$ma_order,
-      ar_order = bestTickerOrder$ar_order
-    ) %>%
-      parsnip::set_engine(
-        "rugarch", 
-        mean.model = list(include.mean = FALSE)
+  tryCatch({
+    garch_fit <- garchmodels::garch_reg(
+        mode = "regression",
+        arch_order = bestTickerOrder$arch_order,
+        garch_order = bestTickerOrder$garch_order,
+        ma_order = bestTickerOrder$ma_order,
+        ar_order = bestTickerOrder$ar_order
       ) %>%
-      parsnip::fit(
-        ret.closing.prices ~ ref.date, 
-        data = data
-      )
-  
-  garch_fit
+        parsnip::set_engine(
+          "rugarch", 
+          mean.model = list(include.mean = FALSE)
+        ) %>%
+        parsnip::fit(
+          ret.closing.prices ~ ref.date, 
+          data = data
+        )
+    
+    garch_fit
+  }, error=function(error){
+    print(data)
+  })
 }
 
 
@@ -359,7 +361,6 @@ make_asset_garchs <- function(asset_returns, bestOrders) {
   if (nrow(bestOrders) > 0 & nrow(asset_returns) > 0) {
     tickers <- asset_returns$ticker %>% 
       unique
-    
     models <- tibble(ticker = NA, model = NA)
     
     for (t in tickers) {
@@ -385,10 +386,6 @@ make_asset_garchs <- function(asset_returns, bestOrders) {
     print("Assets e ordens dos garchs são necessários")
   }
 }
-
-
-result <- make_asset_garchs(asset_returns, bestOrders)
-
 ```
 
 ## Obtendo as previsões futuras
@@ -498,6 +495,34 @@ assets_forecasts$preds[[1]]$.pred$sigmaFor
 ## Qual o risco de cada ação em relação ao mercado?
 
 ```{r}
+calculate_portfolio_covariability <- function(tib_returns) {
+    cov(tib_returns$returns, tib_returns$ret.closing.prices) / var(tib_returns$ret.closing.prices)
+}
+
+
+make_portfolio_market <- function (asset_returns, market = "^BVSP", first.date = "2000-01-01", last.date = Sys.Date(), assets_weights = NULL) {
+    portfolio_ret <- asset_returns %>%
+      tq_portfolio(assets_col  = ticker,
+                   returns_col = ret.closing.prices,
+                   weights     = assets_weights,
+                   col_rename  = "returns")
+      
+      market_ret <-
+        BatchGetSymbols(market,
+                   first.date = first.date,
+                   last.date = last.date,
+                   freq.data = "daily",
+                   type.return = "log")$df.tickers %>%
+        select(ref.date, ret.closing.prices) %>% 
+        as_tibble()
+      
+    tibble(
+      portfolio = list(portfolio_ret),
+      market = list(market_ret)
+    )
+}
+
+
 evaluate_assets <- function(tickers, 
                             bench_ticker = "^BVSP", 
                             market = "^BVSP",
@@ -515,61 +540,64 @@ evaluate_assets <- function(tickers,
   select(ref.date, ticker, ret.closing.prices) %>% 
     drop_na()
   
-  tickers <- asset_returns$ticker %>% 
-    unique
-    
-  for (t in tickers) {
-    asset_returns %>%
-      filter(ticker == t) %>%
-      select(ref.date, ret.closing.prices) %>%
-      drop_na()
-  }
+  portfolio_market_tb <- make_portfolio_market(asset_returns, market, first.date)
   
-  
-  portfolio_ret <- asset_returns %>%
-  tq_portfolio(assets_col  = ticker,
-               returns_col = ret.closing.prices,
-               weights     = assets_weights,
-               col_rename  = "returns")
-  
-  market_ret <-
-    BatchGetSymbols(market,
-               first.date = first.date,
-               last.date = last.date,
-               freq.data = "daily",
-               type.return = "log")$df.tickers %>%
-    select(ref.date, ret.closing.prices) %>% 
-    as_tibble()
+
+  portfolio_ret <- portfolio_market_tb$portfolio[[1]]
+  market_ret <- portfolio_market_tb$market[[1]]
   
   ts.plot(portfolio_ret$returns)
   ts.plot(market_ret$ret.closing.prices)
   
   portfolio_market_ts <- portfolio_ret %>% 
      inner_join(market_ret, by = 'ref.date') 
-
-  calculate_portfolio_covariability(portfolio_market_ts)
   
   betas <- asset_returns %>%
     group_by(ticker) %>%
     inner_join(market_ret, by = 'ref.date') %>% 
     do(model = lm(ret.closing.prices.x ~ ret.closing.prices.y,
-              data = .))
+              data = .)) 
 
+  betas$portfolio_cov <- calculate_portfolio_covariability(portfolio_market_ts)
+  
   betas
 }
 
 
 assets_lm <- evaluate_assets(my_stocks)
 
-assets_lm$betas <- map(assets_lm$model, coef) %>% 
+assets_lm$betas <- map(assets_lm$model, coef) %>%
   map_dbl(2)
 
 assets_lm
+```
+## Calculando beta do portfolio
 
-## para calcular o beta do portfolio precisamos dos weights de cada uma das ações, e então multiplicar cada beta com o seu peso respectivo - leia-se beta_porfolio_byhand do arquivo capm_model.rmd
+```{r}
+
+qtty_tickers <- length(unique(asset_returns$ticker))
+asset_weights <- rep(1 / qtty_tickers, qtty_tickers)
+
+assets_lm$weights <- asset_weights
+
+portfolio_beta <- sum(assets_lm$betas * assets_lm$weights)
+
+portfolio_beta
 
 ```
 
+
+## Retornos do portfolio e modelo de volatilidade 
+
+```{r}
+portfolio_ret <- make_portfolio_market(asset_returns)$portfolio[[1]] %>% 
+  mutate(
+    ticker = "portfolio",
+    ret.closing.prices = returns
+  )
+
+best_portfolio_orders <- fit_ts_stock(portfolio_ret)
+```
 
 # Dynamic model - CAPM
 
@@ -592,11 +620,17 @@ dlm_routine <- function (df, ticker_string, index_string) {
     dplyr::filter(ticker == ticker_string) %>%
     drop_na('ret.closing.prices')
   
-  index_ret <- df %>%
-    dplyr::select('ref.date', 'ticker','ret.closing.prices') %>%
-    dplyr::filter(ticker == index_string) %>%
+  index_ret <- BatchGetSymbols(c(index_string),
+                first.date = ticker_ret$ref.date[[1]],
+                last.date = (ticker_ret %>% 
+                               dplyr::slice_tail(n = 1))$ref.date[[1]],
+                bench.ticker = index_string,
+                type.return = "log",
+                freq.data = "daily"
+                )$df.tickers %>% 
+  select(ref.date, ticker, ret.closing.prices) %>% 
+    drop_na() %>%
     drop_na('ret.closing.prices')
-  
 
   rang = range(
     index_ret$ret.closing.prices,
@@ -605,9 +639,6 @@ dlm_routine <- function (df, ticker_string, index_string) {
   
   tib_returns <- ticker_ret %>% 
     inner_join(index_ret, by = 'ref.date')
-  
-  
-  print(tib_returns)
 
   plot(
     tib_returns$ret.closing.prices.y,
@@ -632,7 +663,7 @@ dlm_routine <- function (df, ticker_string, index_string) {
      "=",
      round(capm_ticker$coef[1],4)," + ",
      round(capm_ticker$coef[2],4),
-     "*SP500",
+     paste("*", index_string),
      sep=""
    )
  )
@@ -655,16 +686,14 @@ dlm_routine <- function (df, ticker_string, index_string) {
   # colocamos o codigo original (com date -1) e não funcionou
   # colocamos sem e parece estar tudo ok 
   date = tib_returns$ref.date
-  
-  print(paste("isso", length(date)))
-  print(paste("esse", length(mod_filt$m[,1][-1])))
+
   plot(
     date,
     mod_filt$m[,1][-1],
     xlab = "day",
     ylab = expression(alpha[t]),
     type = "l",
-    main = ""
+    main = paste("Filter", "-", ticker_string)
   )
 
   lines(
@@ -684,7 +713,7 @@ dlm_routine <- function (df, ticker_string, index_string) {
        xlab = "day",
        ylab = expression(beta[t]),
        type = "l",
-       main = ""
+       main = ticker_string
  )
   lines(date,
         mod_smot$s[,2][-1],
@@ -698,6 +727,14 @@ dlm_routine <- function (df, ticker_string, index_string) {
   abline(h = 1, lty = 2)
 }
 
-dlm_routine(asset_returns, ticker_string = "ITUB3.SA", index_string = "^BVSP")
+
+index_string = "^GSPC"
+
+tickers <- unique(asset_returns$ticker)
+
+for (t in tickers) {
+  dlm_routine(asset_returns, ticker_string = t, index_string)
+}
+
 ```
 
