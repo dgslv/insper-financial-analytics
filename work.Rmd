@@ -35,28 +35,16 @@ library(modeltime)
 # Stocks gathering
 
 ```{r}
-
-tickers <- read_csv('./bestOrders.csv')[-1]$ticker
-```
-
-```{r}
-my_stocks <- c("ITUB3.SA", "ENBR3.SA",
-               "FLRY3.SA", "B3SA3.SA", "BBDC3.SA",
-               "EGIE3.SA", "TAEE11.SA", "WEGE3.SA", 
-               "PSSA3.SA", "^BVSP")
+tickers <- c("FB", "AAPL", "AMZN", "NFLX", "GOOG", "MSFT")
 
 all_asset_returns <- 
   BatchGetSymbols(tickers,
                 first.date = "2012-06-01",
-                # bench.ticker = "^BVSP",
                 type.return = "log",
                 freq.data = "daily"
                 )$df.tickers %>% 
   select(ref.date, ticker, ret.closing.prices, price.close) %>% 
   drop_na()
-
-
-unique(all_asset_returns$ticker)
 ``` 
 
 ```{r}
