@@ -693,7 +693,7 @@ dlm_routine <- function (df, ticker_string, index_string) {
     xlab = "day",
     ylab = expression(alpha[t]),
     type = "l",
-    main = paste("Filter", "-", ticker_string)
+    main = paste("Estático", "-", ticker_string)
   )
 
   lines(
@@ -713,7 +713,7 @@ dlm_routine <- function (df, ticker_string, index_string) {
        xlab = "day",
        ylab = expression(beta[t]),
        type = "l",
-       main = ticker_string
+       main = paste("Dinamico", "-", ticker_string)
  )
   lines(date,
         mod_smot$s[,2][-1],
